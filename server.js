@@ -286,7 +286,7 @@ io.on('connection', socket => {
 
   socket.on('answer', ({ v }) => {
     const c = ctx(); if (!c || !c.r.pending || c.p.out) return;
-    if (!['Y', 'N', '?', 'YY'].includes(v)) return;
+    if (!['Y', 'N', '?'].includes(v)) return;
     c.r.pending.answers[c.pid] = v;
     tryReveal(c.r);
     emitState(c.r);
