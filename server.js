@@ -18,7 +18,7 @@ function newCode() {
   return c;
 }
 
-const DEFAULTS = { category: 'Anime characters', spectator: 'ghost', penalty: true, difficulty: 'medium', timer: 30, bonus: true, chat: 'out' };
+const DEFAULTS = { category: 'Anime characters', spectator: 'ghost', penalty: true, difficulty: 'medium', timer: 30, bonus: true, chat: 'out', supers: 2 };
 const active = r => r.order.filter(id => !r.players[id].out);
 const threadKey = (a, b) => [a, b].sort().join('|');
 
@@ -55,6 +55,7 @@ function view(r, pid) {
       const p = r.players[id];
       const themeVisible = showAll || p.out || id === pid;
       return { pid: id, name: p.name, score: p.score, out: p.out, connected: p.connected,
+               supers: p.supers || 0,
                hasTheme: !!p.theme, theme: themeVisible ? p.theme : null };
     }),
     pending: r.pending ? {
@@ -121,7 +122,7 @@ function tryReveal(r, force) {
   if (!done && !force) return;
   const answers = {};
   active(r).forEach(id => { answers[id] = r.pending.answers[id] || '?'; });
-  r.log.push({ char: r.pending.char, by: r.players[r.pending.by].name, answers });
+  r.log.push({ id: ++r.lid, char: r.pending.char, by: r.players[r.pending.by].name, answers, flags: {} });
   clearPending(r);
   advance(r);
 }
@@ -179,9 +180,9 @@ io.on('connection', socket => {
     const pid = uid();
     const r = rooms[code] = {
       code, hostPid: pid, phase: 'lobby', settings: { ...DEFAULTS },
-      players: {}, order: [], turn: null, pending: null, log: [], guesses: [], gid: 0, threads: {},
+      players: {}, order: [], turn: null, pending: null, log: [], lid: 0, guesses: [], gid: 0, threads: {},
     };
-    r.players[pid] = { pid, name, score: 0, out: false, theme: null };
+    r.players[pid] = { pid, name, score: 0, out: false, theme: null, supers: 0 };
     r.order.push(pid);
     attach(r, pid);
     cb({ code, pid });
@@ -198,7 +199,7 @@ io.on('connection', socket => {
     if (r.order.some(id => r.players[id].name.toLowerCase() === name.toLowerCase())) return cb({ error: 'That name is taken' });
     const late = r.phase === 'play';
     const pid = uid();
-    r.players[pid] = { pid, name, score: 0, out: late, theme: null };
+    r.players[pid] = { pid, name, score: 0, out: late, theme: null, supers: 0 };
     r.order.push(pid);
     attach(r, pid);
     cb({ code, pid });
@@ -224,6 +225,7 @@ io.on('connection', socket => {
       timer: [0, 15, 20, 30, 45, 60].includes(Number(s.timer)) ? Number(s.timer) : 30,
       bonus: !!s.bonus,
       chat: ['off', 'out', 'anyone'].includes(s.chat) ? s.chat : 'out',
+      supers: [0, 1, 2, 3, 5].includes(Number(s.supers)) ? Number(s.supers) : 2,
     };
     emitState(c.r);
   });
@@ -231,6 +233,7 @@ io.on('connection', socket => {
   socket.on('start', () => {
     const c = ctx(); if (!c || c.pid !== c.r.hostPid || c.r.phase !== 'lobby') return;
     if (c.r.order.length < 2) return err('Need at least 2 players');
+    c.r.order.forEach(id => { c.r.players[id].supers = c.r.settings.supers; });
     c.r.phase = 'themes';
     emitState(c.r);
   });
@@ -280,15 +283,46 @@ io.on('connection', socket => {
 
   socket.on('retract', () => {
     const c = ctx(); if (!c || !c.r.pending || c.r.pending.by !== c.pid) return;
+    // refund any super yes used on the retracted character
+    Object.entries(c.r.pending.answers).forEach(([id, a]) => {
+      if (a === 'S' && c.r.players[id]) c.r.players[id].supers = (c.r.players[id].supers || 0) + 1;
+    });
     clearPending(c.r);
     emitState(c.r);
   });
 
   socket.on('answer', ({ v }) => {
     const c = ctx(); if (!c || !c.r.pending || c.p.out) return;
-    if (!['Y', 'N', '?'].includes(v)) return;
+    if (!['Y', 'N', '?', 'S'].includes(v)) return;
+    if (c.r.pending.answers[c.pid]) return; // already answered
+    if (v === 'S') {
+      if (!(c.p.supers > 0)) return err('No super yes left');
+      c.p.supers--;
+    }
     c.r.pending.answers[c.pid] = v;
     tryReveal(c.r);
+    emitState(c.r);
+  });
+
+  socket.on('flag', ({ id, target }) => {
+    const c = ctx(); if (!c || c.r.phase !== 'play') return;
+    const { r, p, pid } = c;
+    const l = r.log.find(x => x.id === id);
+    if (!l || target === pid || !(target in l.answers)) return;
+    const f = l.flags[target] || (l.flags[target] = []);
+    if (f.includes(pid)) return;
+    f.push(pid);
+    toPlayer(r, target, p.name + ' flagged your answer for "' + l.char + '"');
+    emitState(r);
+  });
+
+  socket.on('amend', ({ id, v }) => {
+    const c = ctx(); if (!c) return;
+    const l = c.r.log.find(x => x.id === id);
+    if (!l || !l.flags[c.pid] || !['Y', 'N', '?'].includes(v)) return;
+    l.answers[c.pid] = v;
+    delete l.flags[c.pid];
+    broadcast(c.r, c.p.name + ' changed an answer for "' + l.char + '"');
     emitState(c.r);
   });
 
@@ -393,7 +427,7 @@ io.on('connection', socket => {
     r.order = r.order.filter(id => r.players[id]);
     r.order.forEach(id => {
       const p = r.players[id];
-      p.score = 0; p.out = false; p.theme = null;
+      p.score = 0; p.out = false; p.theme = null; p.supers = 0;
     });
     r.log = []; r.guesses = []; r.threads = {}; r.turn = null;
     clearPending(r);
