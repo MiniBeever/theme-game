@@ -14,7 +14,7 @@
   input, select { display: block; width: 100%; padding: 10px; font-size: 16px; margin-top: 4px; border: 2px solid #c9c5e0; border-radius: 8px; background: #fff; }
   input[type=checkbox] { display: inline; width: auto; margin-right: 8px; }
   button { padding: 10px 16px; font-size: 16px; border: 0; border-radius: 8px; background: #5b3fd9; color: #fff; cursor: pointer; margin: 4px 6px 4px 0; }
-  button.yes { background: #1f9d55; } button.no { background: #d64545; } button.grey { background: #7b7891; }
+  button.yes { background: #1f9d55; } button.no { background: #d64545; } button.grey { background: #7b7891; } button.maybe { background: #d98a1f; }
   .card { background: #fff; border-radius: 12px; padding: 14px; margin: 12px 0; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
   .char { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
   .notice { position: sticky; top: 8px; background: #1d1b2e; color: #fff; padding: 10px 14px; border-radius: 8px; z-index: 5; margin-bottom: 10px; }
@@ -27,28 +27,124 @@
   th:first-child, td:first-child { text-align: left; }
   th small, td small { display: block; font-weight: normal; color: #6d6a85; font-size: 12px; }
   th.out { opacity: .6; }
+  th.tap { cursor: pointer; }
   td.Y { background: #d6f2df; } td.N { background: #f8d8d8; } td.Q { background: #eee; }
+  .bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .bar h1 { margin: 0; }
+  .bar > div { display: flex; align-items: center; white-space: nowrap; }
+  button.small { padding: 6px 12px; font-size: 14px; margin: 0 0 0 6px; }
   .row { display: flex; gap: 8px; } .row > * { flex: 1; }
   .row button { flex: 0 0 auto; margin-top: 4px; }
+  .timer { font-weight: 700; }
+
+  /* movable message tab */
+  .chatwrap { position: fixed; z-index: 20; display: none; }
+  .bubble { position: relative; width: 56px; height: 56px; border-radius: 50%; font-size: 26px; padding: 0; margin: 0; box-shadow: 0 2px 8px rgba(0,0,0,.3); touch-action: none; user-select: none; }
+  .badge { position: absolute; top: -4px; right: -4px; background: #d64545; color: #fff; border-radius: 99px; font-size: 12px; min-width: 20px; height: 20px; line-height: 20px; padding: 0 5px; display: none; }
+  .panel { width: min(300px, calc(100vw - 16px)); background: #fff; border-radius: 12px; box-shadow: 0 4px 18px rgba(0,0,0,.35); overflow: hidden; }
+  .phead { background: #5b3fd9; color: #fff; padding: 8px 10px; display: flex; justify-content: space-between; align-items: center; cursor: grab; touch-action: none; user-select: none; }
+  .phead button { margin: 0; }
+  .pbody { padding: 8px; }
+  .pbody select, .pbody input { margin-top: 0; padding: 8px; font-size: 15px; }
+  .clog { height: 170px; overflow-y: auto; background: #f6f5fb; border-radius: 8px; padding: 6px; margin: 6px 0; }
+  .msg { max-width: 85%; padding: 6px 10px; border-radius: 10px; margin: 4px 0; font-size: 14px; overflow-wrap: anywhere; }
+  .msg.me { background: #5b3fd9; color: #fff; margin-left: auto; }
+  .msg.them { background: #e6e2f8; }
 </style>
 </head>
 <body>
 <div id="app"></div>
+
+<div id="chatwrap" class="chatwrap">
+  <button id="bubble" class="bubble" aria-label="Open messages">💬<span id="badge" class="badge"></span></button>
+  <div id="panel" class="panel" hidden>
+    <div id="phead" class="phead"><b>Messages (drag me)</b><button class="grey small nodrag" onclick="setOpen(false)">Minimize</button></div>
+    <div class="pbody">
+      <select id="chatwith" onchange="drawLog()"></select>
+      <div id="clog" class="clog"></div>
+      <div class="row"><input id="ctext" maxlength="200" placeholder="Type a message" onkeydown="if(event.key==='Enter')sendMsg()"><button onclick="sendMsg()">Send</button></div>
+    </div>
+  </div>
+</div>
+
 <script src="/socket.io/socket.io.js"></script>
 <script>
 const socket = io();
-let S = null, notice = '';
+let S = null, notice = '', focusPid = null, timerEnd = null;
+let soundOn = localStorage.getItem('tgsound') !== 'off';
+const seen = {};
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+const IDEAS = {
+  easy: ['Has black hair', 'Has blonde hair', 'Has red or pink hair', 'Wears glasses', 'Is a girl or woman', 'Is a hero', 'Is a villain', 'Has an animal companion', 'Uses a sword', 'Is a student', 'Has blue eyes', 'Wears a uniform'],
+  medium: ['Is a sidekick', 'Has a tragic backstory', 'Can fly', 'Wears a hat', 'Uses magic', 'Is a pirate or outlaw', 'Has a scar', 'Is a captain or leader', 'Is an orphan', 'Is not human', 'Has a rival', 'Fights with their fists'],
+  hard: ['Dies in their story', 'Switches sides at some point', 'Has a sibling in the story', 'Loses a limb or an eye', 'Is a mentor figure', 'Name has 4 letters or fewer', 'Name starts with a vowel', 'Has a secret identity', 'Is over 30 years old', 'Betrays someone', 'Is smarter than the lead', 'Is the youngest in their group'],
+};
+
+/* ---------- sound ---------- */
+let audioCtx = null;
+document.addEventListener('pointerdown', () => {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) {}
+});
+function ping(kind) {
+  if (!soundOn) return;
+  const freq = { ask: 520, turn: 880, guess: 700, msg: 660 }[kind] || 600;
+  try {
+    if (audioCtx) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = freq; g.gain.value = 0.08;
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(); o.stop(audioCtx.currentTime + 0.15);
+    }
+    if (navigator.vibrate) navigator.vibrate(120);
+  } catch (e) {}
+}
+function toggleSound() {
+  soundOn = !soundOn;
+  localStorage.setItem('tgsound', soundOn ? 'on' : 'off');
+  render();
+}
+
+/* ---------- connection ---------- */
 function save(code, pid) { localStorage.setItem('tg', JSON.stringify({ code, pid })); }
 socket.on('connect', () => {
   const t = JSON.parse(localStorage.getItem('tg') || 'null');
-  if (t) socket.emit('rejoin', t, ok => { if (!ok) { localStorage.removeItem('tg'); S = null; render(); } });
+  if (t) socket.emit('rejoin', t, ok => { if (!ok) { localStorage.removeItem('tg'); S = null; render(); renderChat(); } });
 });
-socket.on('state', s => { S = s; render(); });
+const othersCount = s => Object.values(s.threads || {}).reduce((n, th) => n + th.filter(m => !m.me).length, 0);
+function notifyChanges(a, b) {
+  if (othersCount(b) > othersCount(a)) ping('msg');
+  if (b.phase !== 'play') return;
+  const m = b.players.find(p => p.pid === b.you);
+  if (!m || m.out) { if (b.guessesForMe.length > a.guessesForMe.length) ping('guess'); return; }
+  if (b.pending && b.myAnswer === null && (!a.pending || a.pending.char !== b.pending.char)) return ping('ask');
+  if (!b.pending && b.turn === b.you && (a.turn !== b.you || a.pending)) return ping('turn');
+  if (b.guessesForMe.length > a.guessesForMe.length) ping('guess');
+}
+socket.on('state', s => {
+  const prev = S;
+  S = s;
+  timerEnd = s.pending && s.pending.secsLeft != null ? Date.now() + s.pending.secsLeft * 1000 : null;
+  for (const k in seen) if (((s.threads || {})[k] || []).length < seen[k]) seen[k] = 0;
+  if (prev) notifyChanges(prev, s);
+  render();
+  renderChat();
+});
 socket.on('notice', say);
-socket.on('kicked', () => { localStorage.removeItem('tg'); S = null; say('You were removed by the host'); });
+socket.on('kicked', () => { localStorage.removeItem('tg'); S = null; say('You were removed from the game'); renderChat(); });
+
+setInterval(() => {
+  const el = $('tspan');
+  if (el && timerEnd) {
+    const s = Math.max(0, Math.ceil((timerEnd - Date.now()) / 1000));
+    el.textContent = s;
+    el.style.color = s <= 5 ? '#d64545' : '';
+  }
+}, 300);
 
 function say(m) {
   notice = m; render();
@@ -60,7 +156,7 @@ const me = () => S.players.find(p => p.pid === S.you);
 const nameOf = pid => { const p = S.players.find(p => p.pid === pid); return p ? p.name : '?'; };
 const isHost = () => S.host === S.you;
 
-/* actions */
+/* ---------- actions ---------- */
 function createRoom() {
   socket.emit('create', { name: $('name').value }, r => r.error ? say(r.error) : save(r.code, r.pid));
 }
@@ -68,27 +164,61 @@ function joinRoom() {
   socket.emit('join', { name: $('name').value, code: $('code').value }, r => r.error ? say(r.error) : save(r.code, r.pid));
 }
 function setS() {
-  socket.emit('settings', { category: $('cat').value, spectator: $('spec').value, penalty: $('pen').checked });
+  socket.emit('settings', {
+    category: $('cat').value, difficulty: $('diff').value, timer: $('tmr').value,
+    spectator: $('spec').value, chat: $('chatmode').value,
+    penalty: $('pen').checked, bonus: $('bon').checked,
+  });
 }
 function sendTheme() { socket.emit('theme', { text: $('theme').value }); }
-function sendChar() { const v = $('char').value; $('char').value = ''; socket.emit('char', { text: v }); }
+function idea() {
+  const list = IDEAS[S.settings.difficulty] || IDEAS.medium;
+  $('theme').value = list[Math.floor(Math.random() * list.length)];
+  $('theme').focus();
+}
+function sendChar(force) {
+  const v = $('char').value.trim();
+  if (!v) return;
+  socket.emit('char', { text: v, force: !!force }, r => {
+    if (r && r.similar && confirm('This looks like "' + r.similar + '", which was already played. Submit anyway?')) {
+      socket.emit('char', { text: v, force: true }, () => {});
+    }
+  });
+}
 function ans(v) { socket.emit('answer', { v }); }
 function sendGuess() { const v = $('gx').value; $('gx').value = ''; socket.emit('guess', { target: $('gt').value, text: v }); }
-function judge(id, correct) { socket.emit('judge', { id, correct }); }
+function judge(id, verdict) { socket.emit('judge', { id, verdict }); }
+function focusOn(pid) { focusPid = pid; render(); }
 function kick(pid) { if (confirm('Kick ' + nameOf(pid) + '?')) socket.emit('kick', { pid }); }
 function kickBtn(p) {
   return isHost() && p.pid !== S.you
     ? ` <a href="#" style="color:#d64545;text-decoration:none;padding:0 4px" onclick="kick('${p.pid}');return false">✕</a>` : '';
 }
-function leave() { localStorage.removeItem('tg'); location.reload(); }
+function leave() {
+  if (S && S.phase !== 'over' && !confirm(isHost() ? 'Leave the game? Host passes to another player.' : 'Leave the game?')) return;
+  socket.emit('leave');
+  localStorage.removeItem('tg');
+  S = null; focusPid = null;
+  render(); renderChat();
+}
+function copyInvite() {
+  const url = location.origin + '/?code=' + S.code;
+  if (navigator.clipboard) navigator.clipboard.writeText(url).then(() => say('Invite link copied'), () => say(url));
+  else say(url);
+}
 
-/* screens */
+/* ---------- screens ---------- */
 function render() {
   const keep = {};
-  document.querySelectorAll('input,select').forEach(e => { if (e.id && e.type !== 'checkbox') keep[e.id] = e.value; });
+  document.querySelectorAll('#app input,#app select').forEach(e => { if (e.id && e.type !== 'checkbox') keep[e.id] = e.value; });
   const focus = document.activeElement && document.activeElement.id;
   $('app').innerHTML = (notice ? '<div class="notice">' + esc(notice) + '</div>' : '') + (S ? screen() : home());
-  for (const id in keep) { const e = $(id); if (e) e.value = keep[id]; }
+  for (const id in keep) {
+    const e = $(id);
+    if (!e) continue;
+    if (e.tagName === 'SELECT' && ![...e.options].some(o => o.value === keep[id])) continue;
+    e.value = keep[id];
+  }
   if (focus && $(focus)) $(focus).focus();
 }
 
@@ -98,13 +228,17 @@ function home() {
   <label>Your name<input id="name" maxlength="20"></label>
   <button onclick="createRoom()">Create game</button>
   <h2>Or join a game</h2>
-  <label>Room code<input id="code" maxlength="4" style="text-transform:uppercase" onkeydown="if(event.key==='Enter')joinRoom()"></label>
+  <label>Room code<input id="code" maxlength="4" value="${esc(new URLSearchParams(location.search).get('code') || '')}" style="text-transform:uppercase" onkeydown="if(event.key==='Enter')joinRoom()"></label>
   <button onclick="joinRoom()">Join game</button>`;
 }
 
 function screen() {
-  return `<h1>Theme Game</h1>` + ({ lobby, themes, play, over }[S.phase])();
+  const bar = `<div class="bar"><h1>Theme Game</h1><div><span class="chip">Room ${S.code}</span><button class="grey small" onclick="toggleSound()" title="Sound and vibration">${soundOn ? '🔔' : '🔕'}</button><button class="grey small" onclick="leave()">Leave</button></div></div>`;
+  return bar + ({ lobby, themes, play, over }[S.phase])();
 }
+
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+const opt = (v, label, cur) => `<option value="${v}" ${String(cur) === String(v) ? 'selected' : ''}>${label}</option>`;
 
 function lobby() {
   const st = S.settings;
@@ -112,17 +246,20 @@ function lobby() {
   let settings;
   if (isHost()) {
     settings = `<label>Character category<input id="cat" value="${esc(st.category)}" maxlength="40" onchange="setS()"></label>
-      <label>When a player is out<select id="spec" onchange="setS()">
-        <option value="ghost" ${st.spectator === 'ghost' ? 'selected' : ''}>Ghost vote (guess blind, no points)</option>
-        <option value="full" ${st.spectator === 'full' ? 'selected' : ''}>See everyone's themes</option>
-      </select></label>
+      <label>Difficulty (used for theme ideas)<select id="diff" onchange="setS()">${opt('easy', 'Easy', st.difficulty)}${opt('medium', 'Medium', st.difficulty)}${opt('hard', 'Hard', st.difficulty)}</select></label>
+      <label>Answer timer<select id="tmr" onchange="setS()">${opt(0, 'Off', st.timer)}${opt(15, '15 seconds', st.timer)}${opt(20, '20 seconds', st.timer)}${opt(30, '30 seconds', st.timer)}${opt(45, '45 seconds', st.timer)}${opt(60, '60 seconds', st.timer)}</select></label>
+      <label>When a player is out<select id="spec" onchange="setS()">${opt('ghost', 'Ghost vote (guess blind, no points)', st.spectator)}${opt('full', "See everyone's themes", st.spectator)}</select></label>
+      <label>Private messages<select id="chatmode" onchange="setS()">${opt('out', 'Only with players who are out', st.chat)}${opt('anyone', 'Anyone with anyone', st.chat)}${opt('off', 'Off', st.chat)}</select></label>
       <label><input type="checkbox" id="pen" ${st.penalty ? 'checked' : ''} onchange="setS()">Wrong guess costs 1 point</label>
+      <label><input type="checkbox" id="bon" ${st.bonus ? 'checked' : ''} onchange="setS()">Bonus points (quick read +1, staying hidden +1)</label>
       <button onclick="socket.emit('start')">Start game</button>`;
   } else {
-    settings = `<p>Category: <b>${esc(st.category)}</b><br>Out players: <b>${st.spectator === 'ghost' ? 'ghost vote' : 'see all themes'}</b><br>Wrong guess penalty: <b>${st.penalty ? 'on' : 'off'}</b></p><p>Waiting for the host to start...</p>`;
+    const chatTxt = { out: 'only with players who are out', anyone: 'anyone with anyone', off: 'off' }[st.chat];
+    settings = `<p>Category: <b>${esc(st.category)}</b><br>Difficulty: <b>${cap(st.difficulty)}</b><br>Answer timer: <b>${st.timer ? st.timer + ' seconds' : 'off'}</b><br>Out players: <b>${st.spectator === 'ghost' ? 'ghost vote' : 'see all themes'}</b><br>Private messages: <b>${chatTxt}</b><br>Wrong guess penalty: <b>${st.penalty ? 'on' : 'off'}</b><br>Bonus points: <b>${st.bonus ? 'on' : 'off'}</b></p><p>Waiting for the host to start...</p>`;
   }
   return `<div class="card"><div>Room code</div><div class="code">${S.code}</div>
-    <div>Others open this page and enter the code.</div></div>
+    <div>Others open this page and enter the code.</div>
+    <button class="small" style="margin:8px 0 0" onclick="copyInvite()">Copy invite link</button></div>
     <h2>Players</h2>${players}<h2>Settings</h2>${settings}`;
 }
 
@@ -130,9 +267,10 @@ function themes() {
   const m = me();
   const locked = S.players.map(p => `<span class="chip">${esc(p.name)} ${p.hasTheme ? '✓' : '...'}${kickBtn(p)}</span>`).join('');
   return `<h2>Pick your secret theme</h2>
-    <p>Category: <b>${esc(S.settings.category)}</b>. Something you can answer yes or no for any character, like "has red hair" or "is a sidekick".</p>
+    <p>Category: <b>${esc(S.settings.category)}</b>. Difficulty: <b>${cap(S.settings.difficulty)}</b>. Pick something you can answer yes or no for any character.</p>
     <input id="theme" maxlength="60" placeholder="Your theme" onkeydown="if(event.key==='Enter')sendTheme()">
     <button onclick="sendTheme()">${m.hasTheme ? 'Change theme' : 'Lock in'}</button>
+    <button class="grey" onclick="idea()">Give me an idea</button>
     ${m.hasTheme ? `<p>Your theme: <b>${esc(m.theme)}</b></p>` : ''}
     <h2>Ready</h2>${locked}
     ${isHost() ? `<p><button class="grey" onclick="socket.emit('forcePlay')">Start without waiting</button></p>` : ''}`;
@@ -141,25 +279,27 @@ function themes() {
 function play() {
   const m = me();
   const act = S.players.filter(p => !p.out);
-  let h = `<div>Room ${S.code} &nbsp; Category: <b>${esc(S.settings.category)}</b></div>`;
+  let h = `<div>Category: <b>${esc(S.settings.category)}</b></div>`;
   h += `<div style="margin:8px 0">` + S.players.map(p => `<span class="chip ${p.out ? 'out' : ''}">${esc(p.name)}: ${p.score}${kickBtn(p)}</span>`).join('') + `</div>`;
-  h += m.out ? `<div class="card">You're out. Your theme was <b>${esc(m.theme)}</b>.</div>` : `<div class="card">Your theme: <b>${esc(m.theme)}</b></div>`;
+  h += m.out
+    ? `<div class="card">${m.theme ? `You're out. Your theme was <b>${esc(m.theme)}</b>.` : `You joined late and are spectating.`}</div>`
+    : `<div class="card">Your theme: <b>${esc(m.theme)}</b></div>`;
 
-  // incoming guesses
   S.guessesForMe.forEach(g => {
     h += `<div class="card" style="border:2px solid #5b3fd9"><b>${esc(g.from)}</b> guessed your theme:<div class="char">${esc(g.text)}</div>
-      <button class="yes" onclick="judge(${g.id},true)">Correct</button><button class="no" onclick="judge(${g.id},false)">Wrong</button></div>`;
+      <button class="yes" onclick="judge(${g.id},'right')">Correct</button><button class="maybe" onclick="judge(${g.id},'close')">Close</button><button class="no" onclick="judge(${g.id},'wrong')">Wrong</button></div>`;
   });
 
-  // turn area
   if (S.pending) {
     const waiting = act.filter(p => p.connected && !S.pending.answered.includes(p.pid)).map(p => esc(p.name)).join(', ');
-    h += `<div class="card"><div class="char">${esc(S.pending.char)}</div><div>Submitted by ${esc(nameOf(S.pending.by))}</div>`;
+    const secs = S.pending.secsLeft;
+    h += `<div class="card"><div class="char">${esc(S.pending.char)}</div><div>Submitted by ${esc(nameOf(S.pending.by))}${secs != null ? ` &nbsp; <span class="timer"><span id="tspan">${secs}</span>s left</span>` : ''}</div>`;
     if (!m.out && !S.myAnswer) {
       h += `<p>Does this character match your theme?</p><button class="yes" onclick="ans('Y')">Yes</button><button class="no" onclick="ans('N')">No</button><button class="grey" onclick="ans('?')">Don't know</button>`;
     } else {
       h += `<p>${m.out ? '' : 'Answer locked. '}Waiting for: ${waiting || 'reveal'}</p>`;
     }
+    if (S.pending.by === S.you) h += `<button class="grey small" style="margin:0" onclick="socket.emit('retract')">Retract character</button>`;
     h += `</div>`;
   } else if (S.turn === S.you && !m.out) {
     h += `<div class="card"><b>Your turn.</b> Name a character (${esc(S.settings.category)}).
@@ -168,7 +308,6 @@ function play() {
     h += `<div class="card">Waiting for <b>${esc(nameOf(S.turn))}</b> to name a character.</div>`;
   }
 
-  // guessing
   const targets = act.filter(p => p.pid !== S.you);
   if (targets.length && (!m.out || S.settings.spectator === 'ghost')) {
     h += `<div class="card"><b>${m.out ? 'Ghost vote (no points)' : 'Guess a theme'}</b>
@@ -177,11 +316,15 @@ function play() {
       ${!m.out && S.settings.penalty ? '<small>Wrong guesses cost 1 point.</small>' : ''}</div>`;
   }
 
-  // grid
-  h += `<h2>Answers</h2><div class="scroll"><table><tr><th>Character</th>` +
-    S.players.map(p => `<th class="${p.out ? 'out' : ''}">${esc(p.name)}${p.theme ? `<small>${esc(p.theme)}</small>` : ''}</th>`).join('') + `</tr>`;
+  const focused = focusPid && S.players.some(p => p.pid === focusPid);
+  const cols = focused ? S.players.filter(p => p.pid === focusPid) : S.players;
+  h += `<h2>Answers</h2>` + (focused
+    ? `<p>Showing only <b>${esc(nameOf(focusPid))}</b>. <a href="#" onclick="focusOn(null);return false">Show everyone</a></p>`
+    : `<p><small>Tap a name to show just that player's column.</small></p>`);
+  h += `<div class="scroll"><table><tr><th>Character</th>` +
+    cols.map(p => `<th class="tap ${p.out ? 'out' : ''}" onclick="focusOn('${p.pid}')">${esc(p.name)}${p.theme ? `<small>${esc(p.theme)}</small>` : ''}</th>`).join('') + `</tr>`;
   [...S.log].reverse().forEach(l => {
-    h += `<tr><td>${esc(l.char)}<small>by ${esc(l.by)}</small></td>` + S.players.map(p => {
+    h += `<tr><td>${esc(l.char)}<small>by ${esc(l.by)}</small></td>` + cols.map(p => {
       const a = l.answers[p.pid];
       return `<td class="${a === 'Y' ? 'Y' : a === 'N' ? 'N' : a ? 'Q' : ''}">${a === 'Y' ? '✓' : a === 'N' ? '✗' : a ? '?' : ''}</td>`;
     }).join('') + `</tr>`;
@@ -197,7 +340,101 @@ function over() {
   const sorted = [...S.players].sort((a, b) => b.score - a.score);
   return `<h2>Game over</h2><div class="scroll"><table><tr><th>Player</th><th>Score</th><th>Theme</th></tr>` +
     sorted.map(p => `<tr><td>${esc(p.name)}</td><td>${p.score}</td><td>${esc(p.theme || '')}</td></tr>`).join('') + `</table></div>
-    <p><button onclick="leave()">Back to start</button></p>`;
+    <p>${isHost() ? `<button class="yes" onclick="socket.emit('rematch')">Play again</button>` : `<small>Waiting for the host to start a rematch, or leave below.</small><br>`}<button class="grey" onclick="leave()">Back to start</button></p>`;
+}
+
+/* ---------- movable message tab ---------- */
+const cw = $('chatwrap'), bubble = $('bubble'), panel = $('panel'), phead = $('phead');
+let cpos = { x: innerWidth - 76, y: innerHeight - 150, open: false };
+try { cpos = Object.assign(cpos, JSON.parse(localStorage.getItem('tgchat') || '{}')); } catch (e) {}
+
+function place(x, y) {
+  const w = cw.offsetWidth || 60, h = cw.offsetHeight || 60;
+  x = Math.min(Math.max(0, x), Math.max(0, innerWidth - w));
+  y = Math.min(Math.max(0, y), Math.max(0, innerHeight - h));
+  cw.style.left = x + 'px'; cw.style.top = y + 'px';
+  cpos.x = x; cpos.y = y;
+}
+function savePos() { localStorage.setItem('tgchat', JSON.stringify(cpos)); }
+function setOpen(o) {
+  cpos.open = o;
+  panel.hidden = !o; bubble.hidden = o;
+  place(cpos.x, cpos.y);
+  savePos();
+  if (o && S) drawLog();
+}
+function attachDrag(handle, onTap) {
+  let drag = false, moved = false, sx, sy, ox, oy;
+  handle.addEventListener('pointerdown', e => {
+    if (e.target.closest('.nodrag')) return;
+    drag = true; moved = false; sx = e.clientX; sy = e.clientY;
+    const r = cw.getBoundingClientRect(); ox = r.left; oy = r.top;
+    handle.setPointerCapture(e.pointerId);
+  });
+  handle.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (Math.abs(dx) + Math.abs(dy) > 6) moved = true;
+    if (moved) place(ox + dx, oy + dy);
+  });
+  handle.addEventListener('pointerup', () => {
+    if (!drag) return;
+    drag = false;
+    if (moved) savePos(); else if (onTap) onTap();
+  });
+}
+attachDrag(bubble, () => setOpen(true));
+attachDrag(phead, null);
+window.addEventListener('resize', () => place(cpos.x, cpos.y));
+panel.hidden = !cpos.open; bubble.hidden = cpos.open;
+place(cpos.x, cpos.y);
+
+function allowedPair(a, b) {
+  const mode = S.settings.chat;
+  if (mode === 'off') return false;
+  if (mode === 'anyone') return true;
+  return a.out || b.out || S.phase === 'over';
+}
+function unread(pid) {
+  const th = (S.threads && S.threads[pid]) || [];
+  return th.slice(seen[pid] || 0).filter(m => !m.me).length;
+}
+function renderChat() {
+  if (!S) { cw.style.display = 'none'; return; }
+  const m = me();
+  const list = S.players.filter(p => p.pid !== S.you && allowedPair(m, p));
+  if (!list.length) { cw.style.display = 'none'; return; }
+  cw.style.display = 'block';
+  const sel = $('chatwith'), cur = sel.value;
+  sel.innerHTML = list.map(p => `<option value="${p.pid}">${esc(p.name)}${p.out ? ' (out)' : ''}</option>`).join('');
+  sel.value = list.some(p => p.pid === cur) ? cur : list[0].pid;
+  drawLog();
+  place(cpos.x, cpos.y);
+}
+function drawLog() {
+  if (!S) return;
+  const pid = $('chatwith').value;
+  const th = (S.threads && S.threads[pid]) || [];
+  if (!panel.hidden) seen[pid] = th.length;
+  $('clog').innerHTML = th.length
+    ? th.map(m => `<div class="msg ${m.me ? 'me' : 'them'}">${esc(m.text)}</div>`).join('')
+    : '<div class="msg them">No messages yet. Ask them about their theme.</div>';
+  $('clog').scrollTop = 1e9;
+  let total = 0;
+  Object.keys(S.threads || {}).forEach(k => { total += unread(k); });
+  const b = $('badge');
+  b.textContent = total; b.style.display = total ? 'block' : 'none';
+  [...$('chatwith').options].forEach(o => {
+    const u = unread(o.value);
+    const base = o.textContent.replace(/ \(\d+ new\)$/, '');
+    o.textContent = u ? base + ' (' + u + ' new)' : base;
+  });
+}
+function sendMsg() {
+  const to = $('chatwith').value, t = $('ctext').value.trim();
+  if (!to || !t) return;
+  socket.emit('msg', { to, text: t });
+  $('ctext').value = '';
 }
 
 render();
