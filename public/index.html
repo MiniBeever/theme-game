@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Theme Game</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f6f5fb; color: #1d1b2e; }
+  #app { max-width: 720px; margin: 0 auto; padding: 16px; }
+  h1 { margin: 0 0 4px; font-size: 26px; }
+  h2 { margin: 18px 0 8px; font-size: 20px; }
+  label { display: block; margin: 10px 0; font-size: 14px; }
+  input, select { display: block; width: 100%; padding: 10px; font-size: 16px; margin-top: 4px; border: 2px solid #c9c5e0; border-radius: 8px; background: #fff; }
+  input[type=checkbox] { display: inline; width: auto; margin-right: 8px; }
+  button { padding: 10px 16px; font-size: 16px; border: 0; border-radius: 8px; background: #5b3fd9; color: #fff; cursor: pointer; margin: 4px 6px 4px 0; }
+  button.yes { background: #1f9d55; } button.no { background: #d64545; } button.grey { background: #7b7891; }
+  .card { background: #fff; border-radius: 12px; padding: 14px; margin: 12px 0; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  .char { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
+  .notice { position: sticky; top: 8px; background: #1d1b2e; color: #fff; padding: 10px 14px; border-radius: 8px; z-index: 5; margin-bottom: 10px; }
+  .chip { display: inline-block; background: #e6e2f8; border-radius: 99px; padding: 4px 12px; margin: 2px 4px 2px 0; font-size: 14px; }
+  .chip.out { opacity: .5; text-decoration: line-through; }
+  .code { font-size: 44px; font-weight: 800; letter-spacing: 8px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; background: #fff; }
+  th, td { border: 1px solid #ddd9ee; padding: 6px 8px; text-align: center; font-size: 15px; }
+  th:first-child, td:first-child { text-align: left; }
+  th small, td small { display: block; font-weight: normal; color: #6d6a85; font-size: 12px; }
+  th.out { opacity: .6; }
+  td.Y { background: #d6f2df; } td.N { background: #f8d8d8; } td.Q { background: #eee; }
+  .row { display: flex; gap: 8px; } .row > * { flex: 1; }
+  .row button { flex: 0 0 auto; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+let S = null, notice = '';
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function save(code, pid) { localStorage.setItem('tg', JSON.stringify({ code, pid })); }
+socket.on('connect', () => {
+  const t = JSON.parse(localStorage.getItem('tg') || 'null');
+  if (t) socket.emit('rejoin', t, ok => { if (!ok) { localStorage.removeItem('tg'); S = null; render(); } });
+});
+socket.on('state', s => { S = s; render(); });
+socket.on('notice', say);
+socket.on('kicked', () => { localStorage.removeItem('tg'); S = null; say('The host started without you'); });
+
+function say(m) {
+  notice = m; render();
+  clearTimeout(say.t);
+  say.t = setTimeout(() => { notice = ''; render(); }, 4500);
+}
+
+const me = () => S.players.find(p => p.pid === S.you);
+const nameOf = pid => { const p = S.players.find(p => p.pid === pid); return p ? p.name : '?'; };
+const isHost = () => S.host === S.you;
+
+/* actions */
+function createRoom() {
+  socket.emit('create', { name: $('name').value }, r => r.error ? say(r.error) : save(r.code, r.pid));
+}
+function joinRoom() {
+  socket.emit('join', { name: $('name').value, code: $('code').value }, r => r.error ? say(r.error) : save(r.code, r.pid));
+}
+function setS() {
+  socket.emit('settings', { category: $('cat').value, spectator: $('spec').value, penalty: $('pen').checked });
+}
+function sendTheme() { socket.emit('theme', { text: $('theme').value }); }
+function sendChar() { const v = $('char').value; $('char').value = ''; socket.emit('char', { text: v }); }
+function ans(v) { socket.emit('answer', { v }); }
+function sendGuess() { const v = $('gx').value; $('gx').value = ''; socket.emit('guess', { target: $('gt').value, text: v }); }
+function judge(id, correct) { socket.emit('judge', { id, correct }); }
+function leave() { localStorage.removeItem('tg'); location.reload(); }
+
+/* screens */
+function render() {
+  const keep = {};
+  document.querySelectorAll('input,select').forEach(e => { if (e.id && e.type !== 'checkbox') keep[e.id] = e.value; });
+  const focus = document.activeElement && document.activeElement.id;
+  $('app').innerHTML = (notice ? '<div class="notice">' + esc(notice) + '</div>' : '') + (S ? screen() : home());
+  for (const id in keep) { const e = $(id); if (e) e.value = keep[id]; }
+  if (focus && $(focus)) $(focus).focus();
+}
+
+function home() {
+  return `<h1>Theme Game</h1>
+  <p>Everyone gets a secret theme. Take turns naming characters, answer yes or no for your own theme, and work out everyone else's.</p>
+  <label>Your name<input id="name" maxlength="20"></label>
+  <button onclick="createRoom()">Create game</button>
+  <h2>Or join a game</h2>
+  <label>Room code<input id="code" maxlength="4" style="text-transform:uppercase" onkeydown="if(event.key==='Enter')joinRoom()"></label>
+  <button onclick="joinRoom()">Join game</button>`;
+}
+
+function screen() {
+  return `<h1>Theme Game</h1>` + ({ lobby, themes, play, over }[S.phase])();
+}
+
+function lobby() {
+  const st = S.settings;
+  const players = S.players.map(p => `<span class="chip">${esc(p.name)}${p.pid === S.host ? ' (host)' : ''}${p.connected ? '' : ' (away)'}</span>`).join('');
+  let settings;
+  if (isHost()) {
+    settings = `<label>Character category<input id="cat" value="${esc(st.category)}" maxlength="40" onchange="setS()"></label>
+      <label>When a player is out<select id="spec" onchange="setS()">
+        <option value="ghost" ${st.spectator === 'ghost' ? 'selected' : ''}>Ghost vote (guess blind, no points)</option>
+        <option value="full" ${st.spectator === 'full' ? 'selected' : ''}>See everyone's themes</option>
+      </select></label>
+      <label><input type="checkbox" id="pen" ${st.penalty ? 'checked' : ''} onchange="setS()">Wrong guess costs 1 point</label>
+      <button onclick="socket.emit('start')">Start game</button>`;
+  } else {
+    settings = `<p>Category: <b>${esc(st.category)}</b><br>Out players: <b>${st.spectator === 'ghost' ? 'ghost vote' : 'see all themes'}</b><br>Wrong guess penalty: <b>${st.penalty ? 'on' : 'off'}</b></p><p>Waiting for the host to start...</p>`;
+  }
+  return `<div class="card"><div>Room code</div><div class="code">${S.code}</div>
+    <div>Others open this page and enter the code.</div></div>
+    <h2>Players</h2>${players}<h2>Settings</h2>${settings}`;
+}
+
+function themes() {
+  const m = me();
+  const locked = S.players.map(p => `<span class="chip">${esc(p.name)} ${p.hasTheme ? '✓' : '...'}</span>`).join('');
+  return `<h2>Pick your secret theme</h2>
+    <p>Category: <b>${esc(S.settings.category)}</b>. Something you can answer yes or no for any character, like "has red hair" or "is a sidekick".</p>
+    <input id="theme" maxlength="60" placeholder="Your theme" onkeydown="if(event.key==='Enter')sendTheme()">
+    <button onclick="sendTheme()">${m.hasTheme ? 'Change theme' : 'Lock in'}</button>
+    ${m.hasTheme ? `<p>Your theme: <b>${esc(m.theme)}</b></p>` : ''}
+    <h2>Ready</h2>${locked}
+    ${isHost() ? `<p><button class="grey" onclick="socket.emit('forcePlay')">Start without waiting</button></p>` : ''}`;
+}
+
+function play() {
+  const m = me();
+  const act = S.players.filter(p => !p.out);
+  let h = `<div>Room ${S.code} &nbsp; Category: <b>${esc(S.settings.category)}</b></div>`;
+  h += `<div style="margin:8px 0">` + S.players.map(p => `<span class="chip ${p.out ? 'out' : ''}">${esc(p.name)}: ${p.score}</span>`).join('') + `</div>`;
+  h += m.out ? `<div class="card">You're out. Your theme was <b>${esc(m.theme)}</b>.</div>` : `<div class="card">Your theme: <b>${esc(m.theme)}</b></div>`;
+
+  // incoming guesses
+  S.guessesForMe.forEach(g => {
+    h += `<div class="card" style="border:2px solid #5b3fd9"><b>${esc(g.from)}</b> guessed your theme:<div class="char">${esc(g.text)}</div>
+      <button class="yes" onclick="judge(${g.id},true)">Correct</button><button class="no" onclick="judge(${g.id},false)">Wrong</button></div>`;
+  });
+
+  // turn area
+  if (S.pending) {
+    const waiting = act.filter(p => p.connected && !S.pending.answered.includes(p.pid)).map(p => esc(p.name)).join(', ');
+    h += `<div class="card"><div class="char">${esc(S.pending.char)}</div><div>Submitted by ${esc(nameOf(S.pending.by))}</div>`;
+    if (!m.out && !S.myAnswer) {
+      h += `<p>Does this character match your theme?</p><button class="yes" onclick="ans('Y')">Yes</button><button class="no" onclick="ans('N')">No</button><button class="grey" onclick="ans('?')">Don't know</button>`;
+    } else {
+      h += `<p>${m.out ? '' : 'Answer locked. '}Waiting for: ${waiting || 'reveal'}</p>`;
+    }
+    h += `</div>`;
+  } else if (S.turn === S.you && !m.out) {
+    h += `<div class="card"><b>Your turn.</b> Name a character (${esc(S.settings.category)}).
+      <div class="row"><input id="char" maxlength="60" onkeydown="if(event.key==='Enter')sendChar()"><button onclick="sendChar()">Submit</button></div></div>`;
+  } else {
+    h += `<div class="card">Waiting for <b>${esc(nameOf(S.turn))}</b> to name a character.</div>`;
+  }
+
+  // guessing
+  const targets = act.filter(p => p.pid !== S.you);
+  if (targets.length && (!m.out || S.settings.spectator === 'ghost')) {
+    h += `<div class="card"><b>${m.out ? 'Ghost vote (no points)' : 'Guess a theme'}</b>
+      <select id="gt">${targets.map(p => `<option value="${p.pid}">${esc(p.name)}</option>`).join('')}</select>
+      <div class="row"><input id="gx" maxlength="80" placeholder="Their theme" onkeydown="if(event.key==='Enter')sendGuess()"><button onclick="sendGuess()">Guess</button></div>
+      ${!m.out && S.settings.penalty ? '<small>Wrong guesses cost 1 point.</small>' : ''}</div>`;
+  }
+
+  // grid
+  h += `<h2>Answers</h2><div class="scroll"><table><tr><th>Character</th>` +
+    S.players.map(p => `<th class="${p.out ? 'out' : ''}">${esc(p.name)}${p.theme ? `<small>${esc(p.theme)}</small>` : ''}</th>`).join('') + `</tr>`;
+  [...S.log].reverse().forEach(l => {
+    h += `<tr><td>${esc(l.char)}<small>by ${esc(l.by)}</small></td>` + S.players.map(p => {
+      const a = l.answers[p.pid];
+      return `<td class="${a === 'Y' ? 'Y' : a === 'N' ? 'N' : a ? 'Q' : ''}">${a === 'Y' ? '✓' : a === 'N' ? '✗' : a ? '?' : ''}</td>`;
+    }).join('') + `</tr>`;
+  });
+  h += `</table></div>`;
+  if (!S.log.length) h += `<p>No characters yet.</p>`;
+
+  if (isHost()) h += `<h2>Host</h2><button class="grey" onclick="socket.emit('forceContinue')">Skip stuck turn or force reveal</button><button class="grey" onclick="if(confirm('End the game?'))socket.emit('endGame')">End game</button>`;
+  return h;
+}
+
+function over() {
+  const sorted = [...S.players].sort((a, b) => b.score - a.score);
+  return `<h2>Game over</h2><div class="scroll"><table><tr><th>Player</th><th>Score</th><th>Theme</th></tr>` +
+    sorted.map(p => `<tr><td>${esc(p.name)}</td><td>${p.score}</td><td>${esc(p.theme || '')}</td></tr>`).join('') + `</table></div>
+    <p><button onclick="leave()">Back to start</button></p>`;
+}
+
+render();
+</script>
+</body>
+</html>
