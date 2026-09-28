@@ -48,7 +48,7 @@ socket.on('connect', () => {
 });
 socket.on('state', s => { S = s; render(); });
 socket.on('notice', say);
-socket.on('kicked', () => { localStorage.removeItem('tg'); S = null; say('The host started without you'); });
+socket.on('kicked', () => { localStorage.removeItem('tg'); S = null; say('You were removed by the host'); });
 
 function say(m) {
   notice = m; render();
@@ -75,6 +75,11 @@ function sendChar() { const v = $('char').value; $('char').value = ''; socket.em
 function ans(v) { socket.emit('answer', { v }); }
 function sendGuess() { const v = $('gx').value; $('gx').value = ''; socket.emit('guess', { target: $('gt').value, text: v }); }
 function judge(id, correct) { socket.emit('judge', { id, correct }); }
+function kick(pid) { if (confirm('Kick ' + nameOf(pid) + '?')) socket.emit('kick', { pid }); }
+function kickBtn(p) {
+  return isHost() && p.pid !== S.you
+    ? ` <a href="#" style="color:#d64545;text-decoration:none;padding:0 4px" onclick="kick('${p.pid}');return false">✕</a>` : '';
+}
 function leave() { localStorage.removeItem('tg'); location.reload(); }
 
 /* screens */
@@ -103,7 +108,7 @@ function screen() {
 
 function lobby() {
   const st = S.settings;
-  const players = S.players.map(p => `<span class="chip">${esc(p.name)}${p.pid === S.host ? ' (host)' : ''}${p.connected ? '' : ' (away)'}</span>`).join('');
+  const players = S.players.map(p => `<span class="chip">${esc(p.name)}${p.pid === S.host ? ' (host)' : ''}${p.connected ? '' : ' (away)'}${kickBtn(p)}</span>`).join('');
   let settings;
   if (isHost()) {
     settings = `<label>Character category<input id="cat" value="${esc(st.category)}" maxlength="40" onchange="setS()"></label>
@@ -123,7 +128,7 @@ function lobby() {
 
 function themes() {
   const m = me();
-  const locked = S.players.map(p => `<span class="chip">${esc(p.name)} ${p.hasTheme ? '✓' : '...'}</span>`).join('');
+  const locked = S.players.map(p => `<span class="chip">${esc(p.name)} ${p.hasTheme ? '✓' : '...'}${kickBtn(p)}</span>`).join('');
   return `<h2>Pick your secret theme</h2>
     <p>Category: <b>${esc(S.settings.category)}</b>. Something you can answer yes or no for any character, like "has red hair" or "is a sidekick".</p>
     <input id="theme" maxlength="60" placeholder="Your theme" onkeydown="if(event.key==='Enter')sendTheme()">
@@ -137,7 +142,7 @@ function play() {
   const m = me();
   const act = S.players.filter(p => !p.out);
   let h = `<div>Room ${S.code} &nbsp; Category: <b>${esc(S.settings.category)}</b></div>`;
-  h += `<div style="margin:8px 0">` + S.players.map(p => `<span class="chip ${p.out ? 'out' : ''}">${esc(p.name)}: ${p.score}</span>`).join('') + `</div>`;
+  h += `<div style="margin:8px 0">` + S.players.map(p => `<span class="chip ${p.out ? 'out' : ''}">${esc(p.name)}: ${p.score}${kickBtn(p)}</span>`).join('') + `</div>`;
   h += m.out ? `<div class="card">You're out. Your theme was <b>${esc(m.theme)}</b>.</div>` : `<div class="card">Your theme: <b>${esc(m.theme)}</b></div>`;
 
   // incoming guesses
