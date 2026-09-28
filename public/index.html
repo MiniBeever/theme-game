@@ -29,6 +29,9 @@
   th.out { opacity: .6; }
   th.tap { cursor: pointer; }
   td.Y { background: #d6f2df; } td.N { background: #f8d8d8; } td.Q { background: #eee; }
+  td.S { background: #a6e8bd; font-weight: 700; }
+  td.tapcell { cursor: pointer; }
+  td.flagged { outline: 2px solid #d98a1f; outline-offset: -2px; }
   .bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
   .bar h1 { margin: 0; }
   .bar > div { display: flex; align-items: center; white-space: nowrap; }
@@ -166,7 +169,7 @@ function joinRoom() {
 function setS() {
   socket.emit('settings', {
     category: $('cat').value, difficulty: $('diff').value, timer: $('tmr').value,
-    spectator: $('spec').value, chat: $('chatmode').value,
+    spectator: $('spec').value, chat: $('chatmode').value, supers: $('sup').value,
     penalty: $('pen').checked, bonus: $('bon').checked,
   });
 }
@@ -186,6 +189,13 @@ function sendChar(force) {
   });
 }
 function ans(v) { socket.emit('answer', { v }); }
+function flag(id, target) {
+  if (confirm('Flag ' + nameOf(target) + "'s answer as suspicious?")) socket.emit('flag', { id, target });
+}
+function amend(id) {
+  const v = (prompt('Your answer was flagged. Change it to Y, N or ? (Cancel to keep it)') || '').trim().toUpperCase();
+  if (['Y', 'N', '?'].includes(v)) socket.emit('amend', { id, v });
+}
 function sendGuess() { const v = $('gx').value; $('gx').value = ''; socket.emit('guess', { target: $('gt').value, text: v }); }
 function judge(id, verdict) { socket.emit('judge', { id, verdict }); }
 function focusOn(pid) { focusPid = pid; render(); }
@@ -248,6 +258,7 @@ function lobby() {
     settings = `<label>Character category<input id="cat" value="${esc(st.category)}" maxlength="40" onchange="setS()"></label>
       <label>Difficulty (used for theme ideas)<select id="diff" onchange="setS()">${opt('easy', 'Easy', st.difficulty)}${opt('medium', 'Medium', st.difficulty)}${opt('hard', 'Hard', st.difficulty)}</select></label>
       <label>Answer timer<select id="tmr" onchange="setS()">${opt(0, 'Off', st.timer)}${opt(15, '15 seconds', st.timer)}${opt(20, '20 seconds', st.timer)}${opt(30, '30 seconds', st.timer)}${opt(45, '45 seconds', st.timer)}${opt(60, '60 seconds', st.timer)}</select></label>
+      <label>Super yes per player<select id="sup" onchange="setS()">${opt(0, 'Off', st.supers)}${opt(1, '1', st.supers)}${opt(2, '2', st.supers)}${opt(3, '3', st.supers)}${opt(5, '5', st.supers)}</select></label>
       <label>When a player is out<select id="spec" onchange="setS()">${opt('ghost', 'Ghost vote (guess blind, no points)', st.spectator)}${opt('full', "See everyone's themes", st.spectator)}</select></label>
       <label>Private messages<select id="chatmode" onchange="setS()">${opt('out', 'Only with players who are out', st.chat)}${opt('anyone', 'Anyone with anyone', st.chat)}${opt('off', 'Off', st.chat)}</select></label>
       <label><input type="checkbox" id="pen" ${st.penalty ? 'checked' : ''} onchange="setS()">Wrong guess costs 1 point</label>
@@ -255,7 +266,7 @@ function lobby() {
       <button onclick="socket.emit('start')">Start game</button>`;
   } else {
     const chatTxt = { out: 'only with players who are out', anyone: 'anyone with anyone', off: 'off' }[st.chat];
-    settings = `<p>Category: <b>${esc(st.category)}</b><br>Difficulty: <b>${cap(st.difficulty)}</b><br>Answer timer: <b>${st.timer ? st.timer + ' seconds' : 'off'}</b><br>Out players: <b>${st.spectator === 'ghost' ? 'ghost vote' : 'see all themes'}</b><br>Private messages: <b>${chatTxt}</b><br>Wrong guess penalty: <b>${st.penalty ? 'on' : 'off'}</b><br>Bonus points: <b>${st.bonus ? 'on' : 'off'}</b></p><p>Waiting for the host to start...</p>`;
+    settings = `<p>Category: <b>${esc(st.category)}</b><br>Difficulty: <b>${cap(st.difficulty)}</b><br>Answer timer: <b>${st.timer ? st.timer + ' seconds' : 'off'}</b><br>Super yes per player: <b>${st.supers ? st.supers : 'off'}</b><br>Out players: <b>${st.spectator === 'ghost' ? 'ghost vote' : 'see all themes'}</b><br>Private messages: <b>${chatTxt}</b><br>Wrong guess penalty: <b>${st.penalty ? 'on' : 'off'}</b><br>Bonus points: <b>${st.bonus ? 'on' : 'off'}</b></p><p>Waiting for the host to start...</p>`;
   }
   return `<div class="card"><div>Room code</div><div class="code">${S.code}</div>
     <div>Others open this page and enter the code.</div>
@@ -295,7 +306,7 @@ function play() {
     const secs = S.pending.secsLeft;
     h += `<div class="card"><div class="char">${esc(S.pending.char)}</div><div>Submitted by ${esc(nameOf(S.pending.by))}${secs != null ? ` &nbsp; <span class="timer"><span id="tspan">${secs}</span>s left</span>` : ''}</div>`;
     if (!m.out && !S.myAnswer) {
-      h += `<p>Does this character match your theme?</p><button class="yes" onclick="ans('Y')">Yes</button><button class="no" onclick="ans('N')">No</button><button class="grey" onclick="ans('?')">Don't know</button>`;
+      h += `<p>Does this character match your theme?</p><button class="yes" onclick="ans('Y')">Yes</button>${m.supers > 0 ? `<button class="yes" onclick="ans('S')">★ Super yes (${m.supers} left)</button>` : ''}<button class="no" onclick="ans('N')">No</button><button class="grey" onclick="ans('?')">Don't know</button>`;
     } else {
       h += `<p>${m.out ? '' : 'Answer locked. '}Waiting for: ${waiting || 'reveal'}</p>`;
     }
@@ -320,13 +331,19 @@ function play() {
   const cols = focused ? S.players.filter(p => p.pid === focusPid) : S.players;
   h += `<h2>Answers</h2>` + (focused
     ? `<p>Showing only <b>${esc(nameOf(focusPid))}</b>. <a href="#" onclick="focusOn(null);return false">Show everyone</a></p>`
-    : `<p><small>Tap a name to show just that player's column.</small></p>`);
+    : `<p><small>Tap a name to show just that player's column. Tap someone else's answer to flag it as suspicious. ★ means super yes.</small></p>`);
   h += `<div class="scroll"><table><tr><th>Character</th>` +
     cols.map(p => `<th class="tap ${p.out ? 'out' : ''}" onclick="focusOn('${p.pid}')">${esc(p.name)}${p.theme ? `<small>${esc(p.theme)}</small>` : ''}</th>`).join('') + `</tr>`;
   [...S.log].reverse().forEach(l => {
     h += `<tr><td>${esc(l.char)}<small>by ${esc(l.by)}</small></td>` + cols.map(p => {
       const a = l.answers[p.pid];
-      return `<td class="${a === 'Y' ? 'Y' : a === 'N' ? 'N' : a ? 'Q' : ''}">${a === 'Y' ? '✓' : a === 'N' ? '✗' : a ? '?' : ''}</td>`;
+      const sym = { Y: '✓', S: '★', N: '✗', '?': '?' }[a] || '';
+      const cls = a === 'S' ? 'S' : a === 'Y' ? 'Y' : a === 'N' ? 'N' : a ? 'Q' : '';
+      const fl = (l.flags && l.flags[p.pid]) || [];
+      const canFlag = a && p.pid !== S.you;
+      const canAmend = a && p.pid === S.you && fl.length;
+      const click = canFlag ? `onclick="flag(${l.id},'${p.pid}')"` : canAmend ? `onclick="amend(${l.id})"` : '';
+      return `<td class="${cls} ${click ? 'tapcell' : ''} ${fl.length ? 'flagged' : ''}" ${click}>${sym}${fl.length ? ' ⚑' + fl.length : ''}</td>`;
     }).join('') + `</tr>`;
   });
   h += `</table></div>`;
