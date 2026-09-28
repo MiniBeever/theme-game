@@ -247,6 +247,31 @@ io.on('connection', socket => {
     emitState(c.r);
   });
 
+  socket.on('kick', ({ pid: target }) => {
+    const c = ctx(); if (!c || c.pid !== c.r.hostPid) return;
+    const r = c.r;
+    const t = r.players[target];
+    if (!t || target === c.pid) return;
+    if (t.sid) io.to(t.sid).emit('kicked');
+
+    r.guesses = r.guesses.filter(x => x.target !== target && x.guesser !== target);
+    if (r.pending) {
+      delete r.pending.answers[target];
+      if (r.pending.by === target) r.pending = null;
+    }
+    t.out = true;
+    if (r.turn === target) advance(r);
+    delete r.players[target];
+    r.order = r.order.filter(id => id !== target);
+
+    if (r.phase === 'themes' && r.order.length >= 2 && r.order.every(id => r.players[id].theme)) {
+      r.phase = 'play';
+      r.turn = r.order[0];
+    }
+    if (r.phase === 'play') { tryReveal(r); checkOver(r); }
+    emitState(r);
+  });
+  
   socket.on('endGame', () => {
     const c = ctx(); if (!c || c.pid !== c.r.hostPid) return;
     c.r.phase = 'over';
